@@ -224,16 +224,35 @@ export class PemdParser {
         return this.doc;
     }
 
-    private parse_content(i: number): ParseResult {
+    private parse_content(i: number, both_end_paren?: boolean): ParseResult {
+        console.log("parse_content", both_end_paren);
+        let is_paren_end: boolean = (both_end_paren === undefined ? false : both_end_paren);
         let curContent: string = "";
         let count: number = 0;
-        for (let j = i; ; j++) {
+        let j = i;
+
+        if (is_paren_end) {
+            if (this.source.charAt(j) != "(") {
+                return ParseError("content with parenthesis ends must be start with '('");
+            }
+            count++;
+            j++;
+        }
+
+        for (;; j++) {
             count++;
             let c = this.source.charAt(j);
             //console.log(c)
-            if (c == ")" || c == "") {
+            if (c == "") {
                 // here is the basis of this recursive descent parser
                 return new ParseResult(curContent, count, c);
+            } else if (c == ")") {
+                console.log(is_paren_end);
+                if (is_paren_end) {
+                    return new ParseResult(curContent, count, c);
+                } else {
+                    return ParseError("reached ')' which is not paired");
+                }
             } else if (c == "\\") {
                 // processing escape characters
                 let next_c = this.source.charAt(j+1);
@@ -252,15 +271,16 @@ export class PemdParser {
                     if (result.ErrorOccurred) {
                         return result;
                     }
+                    count += result.readLength;
+                    j += result.readLength;
+                    //curContent += `![ref|${command.name}]`;
+                    curContent += `![ref|${1}]`;
                     /*
                     let command = result.result;
                     if (command.name in global_table) {
                         return ParseError(`duplicated identifier: "${command.name}"`);
                     }
-                    curContent += `![ref|${command.name}]`;
                     global_table[command.name] = command;
-                    count += result.readLength;
-                    j += result.readLength;
                     */
                 } else {
                     curContent += c;
@@ -292,7 +312,9 @@ export class PemdParser {
         for (let j = i; ; j++) {
             count++;
             let c = this.source.charAt(j);
-            if (is_one_of(c, separator)) {
+            if (c == "") {
+                break;
+            } else if (is_one_of(c, separator)) {
                 return new ParseResult(buffer, count, c);
             } else {
                 buffer += c;
@@ -343,8 +365,8 @@ export class PemdParser {
                 count--;
                 j--;
                 result = this.parse_spaces(j);
-                count += result.readLength;
                 if (is_one_of(result.lastChar, command_end)) {
+                    count += result.readLength;
                     //console.log("break point 2");
                     break;
                 }
@@ -356,25 +378,48 @@ export class PemdParser {
         return new ParseResult(args, count, result.lastChar);
     }
 
-    private parse_name(i: number) ParseResult {
+    private parse_name(i: number): ParseResult {
         let count: number = 0;
         let j: number = i;
 
         const name_separator = " \t\n]";
         const command_end = "]";
 
-        let result = this.parse_word(j, name_separator);
+        let result = this.parse_spaces(j);
+        count += result.readLength;
+        if (is_one_of(result.lastChar, command_end)) {
+            return new ParseResult("", count, result.lastChar);
+        }
+        j += result.readLength;
+
+        // note that result.readLength indicates the length of spaces + 1
+        // because of prefetching.
+        // we should decrement cursol
+        count--;
+        j--;
+
+        result = this.parse_word(j, name_separator);
         if (result.ErrorOccurred) {
             return result;
         }
 
-        name = result.result;
-        count += readLength;
+        let name = result.result;
+        count += result.readLength;
+        j += result.readLength;
+
         if (is_one_of(result.lastChar, command_end)) {
             return new ParseResult(name, count, result.lastChar);
         }
 
-        result = this.parse_spaces();
+        count--;
+        j--;
+        result = this.parse_spaces(j);
+        if (is_one_of(result.lastChar, command_end)) {
+            count += result.readLength;
+            return new ParseResult(name, count, result.lastChar);
+        }
+
+        return ParseError("command is not allowed to have the second name, should be end with ']'");
     }
 
 /*
@@ -417,27 +462,44 @@ export class PemdParser {
         command_and_args.shift()
         args = command_and_args;
         count += result.readLength;
+        j += result.readLength;
 
         //console.log(command, args);
 
         if (result.lastChar == "") {
             return ParseError("reached EOF while parsing");
         } else if (result.lastChar == "|") {
-            result = this.parse_name();
+            result = this.parse_name(j);
             if (result.ErrorOccurred) {
                 return result;
             }
-            /*
+
             name = result.result;
             count += result.readLength;
-
-            if (result.lastChar != "]") {
-                return ParseError("expected ']'");
-            }
-            */
+            j += result.readLength;
         }
 
-        return result;
+        //console.log(command, args, name);
+
+        if (result.lastChar != "]") {
+            return ParseError("expected ']'");
+        }
+
+        if (this.source.charAt(j) == "(") {
+            console.log("here!!!!!!!");
+            result = this.parse_content(j, true);
+            if (result.ErrorOccurred) {
+                return result;
+            }
+            content = result.result;
+            count += result.readLength;
+            j += result.readLength;
+        }
+
+        console.log(command, args, name, content);
+
+        let ret = new PemdCommand(command, args, name, detail, meta, reference, content);
+        return new ParseResult(ret, count, result.lastChar);
         /*
         result = this.parse_detail();
         if (result.error != null) {
@@ -460,15 +522,6 @@ export class PemdParser {
         reference = result.result;
         count += result.readLength;
 
-        result = this.parse_content();
-        if (result.error != null) {
-            return result.error;
-        }
-        content = result.result;
-        count += result.readLength;
-
-        ret = new PemdCommand(command, args, name, detail, meta, reference, content);
-        return new ParseResult(ret, count, result.lastChar);
     */
     }
 }
