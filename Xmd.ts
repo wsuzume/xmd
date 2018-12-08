@@ -275,6 +275,7 @@ export class XmdParser {
                     j += result.readLength;
                     //curContent += `![ref|${command.name}]`;
                     curContent += `![ref|${1}]`;
+                    curContent += this.source.charAt(j);
                     /*
                     let command = result.result;
                     if (command.name in global_table) {
@@ -422,55 +423,93 @@ export class XmdParser {
         return ParseError("command is not allowed to have the second name, should be end with ']'");
     }
 
+
     private parse_dictionary(i: number) {
+        //console.log("parse_dictionary");
         let count: number = 0;
         let j: number = i;
 
         if (this.source.charAt(j) != "{") {
             return ParseError("dictionary must be start with '{'");
         }
+
         count++;
         j++;
 
-        const key_separator = " \t\n:}"
-        const value_separator = " \t\n;}"
-
-        let table: { [key: string]: any; };
+        let table: { [key: string]: any; } = {};
 
         let result = this.parse_spaces(j);
         if (result.lastChar == "") {
             return ParseError("reached EOF while parsing dictionary");
         } else if (result.lastChar == "}") {
-            // parsing empty dictionary ends here
             count += result.readLength;
             return new ParseResult(table, count, result.lastChar);
         }
+        count += result.readLength - 1;
+        j += result.readLength - 1;
 
-        // so here is parsing not empty dictionary
-        while (result.lastChar != "}") {
+        const key_separator = " \t\n:;}"
+        const value_separator = " \t\n:;}"
+
+        while(result.lastChar != "}") {
             // key parsing
             result = this.parse_word(j, key_separator);
             if (result.lastChar == "") {
                 return ParseError("reached EOF while parsing dictionary key");
+            } else if (result.lastChar != ":") {
+                return ParseError("key separator must be ':'");
             }
             let key = result.result;
             count += result.readLength;
             j += result.readLength;
 
-            if (is_space(result.lastChar)) {
-                result = this.parse_spaces(j);
-                if (result.lastChar == "") {
-                    return ParseError("reached EOF while parsing dictionary key");
-                }
-                count += result.readLength;
-                j += result.readLength;
+            result = this.parse_spaces(j);
+            if (result.lastChar == "") {
+                return ParseError("reached EOF while parsing dictionary");
+            } else if (result.lastChar == "}") {
+                return ParseError("reached '}' while parsing value");
+            }
+            count += result.readLength - 1;
+            j += result.readLength - 1;
+
+            if (key in table) {
+                return ParseError("duplicated key");
             }
 
-            if (result.lastChar == "}") {
-                return ParseError("reached end of dictionary while parsing key, though key must have paired value");
-            } else if (result.lastChar != ":") {
-                return ParseError("key-value separator must be ':'");
+            // value parsing
+            /*
+            if (result.lastChar == "(") {
+                //処理のネスト
             }
+            */
+            result = this.parse_word(j, value_separator);
+            if (result.lastChar == "") {
+                return ParseError("reached EOF while parsing dictionary key");
+            } else if (result.lastChar != ";") {
+                return ParseError("value separator must be ';'");
+            }
+
+            let value = result.result;
+            //console.log("key: " + key);
+            //console.log("value: " + value);
+            count += result.readLength;
+            j += result.readLength;
+
+            table[key] = value;
+
+            result = this.parse_spaces(j);
+            if (result.lastChar == "") {
+                return ParseError("reached EOF while parsing dictionary");
+            } else if (result.lastChar == "}") {
+                count += result.readLength;
+                continue;
+            }
+            count += result.readLength - 1;
+            j += result.readLength - 1;
+        }
+
+        return new ParseResult(table, count, result.lastChar);
+/*
             // value parsing
             result = this.parse_spaces(j);
             if (result.lastChar == "") {
@@ -486,36 +525,113 @@ export class XmdParser {
                 result = this.parse_word(j, value_separator);
             }
             result = this.parse_spaces(j);
-            if (result. lastChar != "}") {
-                // preparing for next key parsing
-                count--;
-                j--;
-            }
-            break;
         }
 
         return new ParseResult(table, count, result.lastChar);
+        */
     }
 
-    private parse_detail(i: number) {
+    private parse_detail_or_meta(i: number, mode: string) {
+        let prefix: string;
+        if (mode == "detail") {
+            prefix = "?";
+        } else if (mode == "meta") {
+            prefix = "#";
+        } else {
+            return ParseError("mode should be 'detail' or 'meta'");
+        }
+
         let count: number = 0;
         let j: number = i;
 
         let c = this.source.charAt(j);
-        if (c != "$") {
-            return new ParseResult("", 1, c);
+        if (c != prefix) {
+            return new ParseResult(null, 1, c);
         }
+
+        count++;
+        j++;
+
+        let result = this.parse_dictionary(j);
+        if (result.ErrorOccurred) {
+            return result;
+        }
+        count += result.readLength;
+
+        return new ParseResult(result.result, count, result.lastChar);
     }
 
-/*
-    private parse_meta() {
-
+    private parse_detail(i: number) {
+        return this.parse_detail_or_meta(i, "detail");
     }
 
-    private parse_reference() {
-        // parse_one_commandを多用
+    private parse_meta(i: number) {
+        return this.parse_detail_or_meta(i, "meta");
     }
-*/
+
+    private parse_reference(i: number) {
+        let count: number = 0;
+        let j: number = i;
+
+        let c = this.source.charAt(j);
+        if (c != "&") {
+            return new ParseResult(null, 1, c);
+        }
+
+        count++;
+        j++;
+
+        if (this.source.charAt(j) != "{") {
+            return ParseError("dictionary must be start with '{'");
+        }
+
+        count++;
+        j++;
+
+        let reference: { [key: string]: XmdCommand; } = {};
+
+        let result = this.parse_spaces(j);
+        if (result.lastChar == "") {
+            return ParseError("reached EOF while parsing dictionary");
+        } else if (result.lastChar == "}") {
+            count += result.readLength;
+            return new ParseResult(reference, count, result.lastChar);
+        }
+        count += result.readLength - 1;
+        j += result.readLength - 1;
+
+        let command: XmdCommand;
+        while(result.lastChar != "}") {
+            result = this.parse_one_command(j);
+            if (result.ErrorOccurred) {
+                return result;
+            }
+            command = result.result;
+            if (command.name == "") {
+                return ParseError("anonymous command is not allowed in reference");
+            }
+            if (command.name in reference) {
+                return ParseError("duplicated name command is not allowed in reference");
+            }
+            count += result.readLength;
+            j += result.readLength;
+
+            reference[command.name] = command;
+
+            result = this.parse_spaces(j);
+            if (result.lastChar == "") {
+                return ParseError("reached EOF while parsing dictionary");
+            } else if (result.lastChar == "}") {
+                count += result.readLength;
+                continue;
+            }
+            count += result.readLength - 1;
+            j += result.readLength - 1;
+        }
+
+        return new ParseResult(reference, count, result.lastChar);
+    }
+
     private parse_one_command(i: number): ParseResult {
         let command_and_args: string[];
         let command: string;
@@ -543,6 +659,7 @@ export class XmdParser {
 
         //console.log(command, args);
 
+        name = "";
         if (result.lastChar == "") {
             return ParseError("reached EOF while parsing");
         } else if (result.lastChar == "|") {
@@ -562,6 +679,36 @@ export class XmdParser {
             return ParseError("expected ']'");
         }
 
+        result = this.parse_detail(j);
+        if (result.ErrorOccurred) {
+            return result;
+        }
+        detail = result.result;
+        if (detail != null) {
+            count += result.readLength;
+            j += result.readLength;
+        }
+
+        result = this.parse_meta(j);
+        if (result.ErrorOccurred) {
+            return result;
+        }
+        meta = result.result;
+        if (meta != null) {
+            count += result.readLength;
+            j += result.readLength;
+        }
+
+        result = this.parse_reference(j);
+        if (result.ErrorOccurred) {
+            return result;
+        }
+        reference = result.result;
+        if (reference != null) {
+            count += result.readLength;
+            j += result.readLength;
+        }
+
         if (this.source.charAt(j) == "(") {
             result = this.parse_content(j, true);
             if (result.ErrorOccurred) {
@@ -572,35 +719,10 @@ export class XmdParser {
             j += result.readLength;
         }
 
-        // console.log(command, args, name, content);
-
-        result = this.parse_detail(j);
-        if (result.error != null) {
-            return result.error;
-        }
-        detail = result.result;
-        count += result.readLength;
-        j += result.readLength;
+        console.log(command, args, name, detail, meta, reference, content);
 
         let ret = new XmdCommand(command, args, name, detail, meta, reference, content);
         return new ParseResult(ret, count, result.lastChar);
-
-        /*
-        result = this.parse_meta();
-        if (result.error != null) {
-            return result.error;
-        }
-        meta = result.result;
-        count += result.readLength;
-
-        result = this.parse_reference();
-        if (result.error != null) {
-            return result.error;
-        }
-        reference = result.result;
-        count += result.readLength;
-
-    */
     }
 }
 
